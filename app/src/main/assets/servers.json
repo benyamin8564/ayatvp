@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "id": "server-01",
+      "name": "سرور اصلی",
+      "host": "YOUR_SERVER_HOST",
+      "port": 51820,
+      "publicKey": "YOUR_SERVER_PUBLIC_KEY_BASE64",
+      "address": "10.20.0.2/32",
+      "dns": "1.1.1.1",
+      "healthUrl": "https://YOUR_SERVER_HOST/health",
+      "allowedIps": "0.0.0.0/0, ::/0",
+      "persistentKeepalive": 25
+    }
+  ]
+}
