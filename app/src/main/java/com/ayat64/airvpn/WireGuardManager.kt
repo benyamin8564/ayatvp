@@ -37,10 +37,20 @@ class WireGuardManager(private val context: Context) {
     fun connect(server: VpnServer) {
         val privateKey = getPrivateKey()
         val configText = buildConfig(privateKey, server)
-        val config = Config.parse(ByteArrayInputStream(configText.toByteArray(StandardCharsets.UTF_8)))
-        backend.setState(tunnel, Tunnel.State.UP, config)
+        connectConfig(configText)
         store.put("last_server_id", server.id)
     }
+
+    /** Connect using a standard wg-quick WireGuard .conf supplied by the user. */
+    fun connectConfig(configText: String) {
+        require(configText.contains("[Interface]", ignoreCase = true)) { "Invalid WireGuard configuration" }
+        require(configText.contains("[Peer]", ignoreCase = true)) { "No WireGuard peer found" }
+        val config = Config.parse(ByteArrayInputStream(configText.toByteArray(StandardCharsets.UTF_8)))
+        backend.setState(tunnel, Tunnel.State.UP, config)
+        store.put("imported_config", configText)
+    }
+
+    fun hasImportedConfig(): Boolean = store.get("imported_config") != null
 
     fun disconnect() {
         backend.setState(tunnel, Tunnel.State.DOWN, null)
