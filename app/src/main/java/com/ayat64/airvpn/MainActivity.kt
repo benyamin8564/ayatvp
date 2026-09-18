@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -26,6 +27,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         manager = WireGuardManager(this)
+
+        val importConfig = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                val text = contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                    ?: throw IllegalArgumentException("فایل خوانده نشد")
+                manager.connectConfig(text)
+                recreate()
+            } catch (e: Exception) {
+                Toast.makeText(this, "خطا در فایل WireGuard: " + e.message, Toast.LENGTH_LONG).show()
+            }
+        }
 
         setContent {
             var connected by remember { mutableStateOf(manager.isConnected()) }
@@ -104,6 +117,14 @@ class MainActivity : ComponentActivity() {
                             Text(if (busy) "در حال اتصال..." else if (connected) "قطع اتصال" else "اتصال")
                         }
 
+                        Spacer(Modifier.height(10.dp))
+
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !busy && !connected,
+                            onClick = { importConfig.launch(arrayOf("application/octet-stream", "text/plain", "*/*")) }
+                        ) { Text("وارد کردن فایل WireGuard (.conf)") }
+
                         Spacer(Modifier.height(14.dp))
 
                         OutlinedButton(
@@ -149,8 +170,8 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Text(
-                            "کلید خصوصی فقط روی دستگاه و داخل Android Keystore رمزنگاری می‌شود. " +
-                                "برای اتصال واقعی باید public key و endpoint سرور WireGuard خودتان را در servers.json قرار دهید.",
+                            "می‌توانید فایل استاندارد WireGuard (.conf) را از یک سرویس رایگان وارد کنید؛ " +
+                                "کلید خصوصی همان فایل فقط روی دستگاه استفاده می‌شود.",
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center
                         )
