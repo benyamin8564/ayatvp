@@ -46,3 +46,14 @@ data class ServerCatalog(
         }
     }
 }
+
+data class ImportedVpnConfig(
+    val id: String,
+    val name: String,
+    val configText: String
+)
+
+data class ImportedConfigIndex(
+    val id: String,
+    val name: String
+)
