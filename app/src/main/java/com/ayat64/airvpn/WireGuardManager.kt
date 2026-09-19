@@ -5,7 +5,6 @@ import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import com.wireguard.crypto.Key
-import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -13,7 +12,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
 
 class WireGuardManager(private val context: Context) {
     private val backend = GoBackend(context.applicationContext)
@@ -41,13 +39,31 @@ class WireGuardManager(private val context: Context) {
         store.put("last_server_id", server.id)
     }
 
-    /** Connect using a standard wg-quick WireGuard .conf supplied by the user. */
+    fun saveImportedConfig(configText: String) {
+        validateConfig(configText)
+        store.put("imported_config", configText)
+    }
+
+    fun connectImportedConfig() {
+        val configText = store.get("imported_config")
+            ?: throw IllegalStateException("No imported WireGuard configuration")
+        connectConfig(configText)
+    }
+
     fun connectConfig(configText: String) {
-        require(configText.contains("[Interface]", ignoreCase = true)) { "Invalid WireGuard configuration" }
-        require(configText.contains("[Peer]", ignoreCase = true)) { "No WireGuard peer found" }
+        validateConfig(configText)
         val config = Config.parse(ByteArrayInputStream(configText.toByteArray(StandardCharsets.UTF_8)))
         backend.setState(tunnel, Tunnel.State.UP, config)
         store.put("imported_config", configText)
+    }
+
+    private fun validateConfig(configText: String) {
+        require(configText.contains("[Interface]", ignoreCase = true)) {
+            "Invalid WireGuard configuration"
+        }
+        require(configText.contains("[Peer]", ignoreCase = true)) {
+            "No WireGuard peer found"
+        }
     }
 
     fun hasImportedConfig(): Boolean = store.get("imported_config") != null
@@ -74,10 +90,6 @@ class WireGuardManager(private val context: Context) {
         PersistentKeepalive = ${s.keepalive}
     """.trimIndent()
 
-    /**
-     * Chooses the lowest-latency healthy server. Health checks are HTTPS only.
-     * If no healthUrl is provided, the server is retained as a fallback candidate.
-     */
     fun chooseBestServer(catalog: ServerCatalog, timeoutMs: Int = 2500): VpnServer {
         val candidates = catalog.servers
         var best: VpnServer? = null
@@ -107,7 +119,9 @@ class WireGuardManager(private val context: Context) {
     }
 
     fun updateCatalogSecurely(urlString: String, pinnedSha256: String? = null): ServerCatalog {
-        require(urlString.startsWith("https://", ignoreCase = true)) { "Only HTTPS config URLs are allowed" }
+        require(urlString.startsWith("https://", ignoreCase = true)) {
+            "Only HTTPS config URLs are allowed"
+        }
         val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 7000
@@ -132,7 +146,9 @@ class WireGuardManager(private val context: Context) {
     fun loadBundledCatalog(): ServerCatalog {
         val cached = store.get("server_catalog")
         if (cached != null) return ServerCatalog.parse(cached)
-        val text = context.assets.open("servers.json").use { it.readBytes().toString(StandardCharsets.UTF_8) }
+        val text = context.assets.open("servers.json").use {
+            it.readBytes().toString(StandardCharsets.UTF_8)
+        }
         return ServerCatalog.parse(text)
     }
 }
