@@ -31,12 +31,24 @@ class MainActivity : ComponentActivity() {
         val importConfig = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri == null) return@registerForActivityResult
             try {
-                val text = contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                    ?: throw IllegalArgumentException("فایل خوانده نشد")
-                manager.connectConfig(text)
-                recreate()
+                val text = contentResolver.openInputStream(uri)?.use {
+                    it.readBytes().toString(Charsets.UTF_8)
+                } ?: throw IllegalArgumentException("فایل خوانده نشد")
+
+                manager.saveImportedConfig(text)
+
+                val permission = VpnService.prepare(this@MainActivity)
+                if (permission != null) {
+                    startActivityForResult(permission, 101)
+                } else {
+                    connectImportedConfig()
+                }
             } catch (e: Exception) {
-                Toast.makeText(this, "خطا در فایل WireGuard: " + e.message, Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this,
+                    "خطا در فایل WireGuard: " + e.message,
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
 
@@ -76,7 +88,8 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    selected?.let { "سرور: ${it.name}" } ?: "سروری پیکربندی نشده",
+                                    selected?.let { "سرور: ${it.name}" }
+                                        ?: "سروری پیکربندی نشده",
                                     textAlign = TextAlign.Center
                                 )
                             }
@@ -90,7 +103,13 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 if (connected) {
                                     runCatching { manager.disconnect() }
-                                        .onFailure { Toast.makeText(this@MainActivity, it.message, Toast.LENGTH_LONG).show() }
+                                        .onFailure {
+                                            Toast.makeText(
+                                                this@MainActivity,
+                                                it.message,
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
                                         .onSuccess { connected = false }
                                 } else {
                                     val permission = VpnService.prepare(this@MainActivity)
@@ -100,13 +119,15 @@ class MainActivity : ComponentActivity() {
                                         busy = true
                                         val server = selected!!
                                         executor.execute {
-                                            val result = runCatching {
-                                                manager.connect(server)
-                                            }
+                                            val result = runCatching { manager.connect(server) }
                                             runOnUiThread {
                                                 busy = false
                                                 result.onFailure {
-                                                    Toast.makeText(this@MainActivity, "خطا: ${it.message}", Toast.LENGTH_LONG).show()
+                                                    Toast.makeText(
+                                                        this@MainActivity,
+                                                        "خطا: ${it.message}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
                                                 }.onSuccess { connected = true }
                                             }
                                         }
@@ -114,7 +135,11 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         ) {
-                            Text(if (busy) "در حال اتصال..." else if (connected) "قطع اتصال" else "اتصال")
+                            Text(
+                                if (busy) "در حال اتصال..."
+                                else if (connected) "قطع اتصال"
+                                else "اتصال"
+                            )
                         }
 
                         Spacer(Modifier.height(10.dp))
@@ -122,8 +147,14 @@ class MainActivity : ComponentActivity() {
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !busy && !connected,
-                            onClick = { importConfig.launch(arrayOf("application/octet-stream", "text/plain", "*/*")) }
-                        ) { Text("وارد کردن فایل WireGuard (.conf)") }
+                            onClick = {
+                                importConfig.launch(
+                                    arrayOf("application/octet-stream", "text/plain", "*/*")
+                                )
+                            }
+                        ) {
+                            Text("وارد کردن فایل WireGuard (.conf)")
+                        }
 
                         Spacer(Modifier.height(14.dp))
 
@@ -139,12 +170,18 @@ class MainActivity : ComponentActivity() {
                                         busy = false
                                         best.onSuccess {
                                             selected = it
-                                            Toast.makeText(this@MainActivity, "سرور انتخاب شد: ${it.name}", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(
+                                                this@MainActivity,
+                                                "سرور انتخاب شد: ${it.name}",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
                                         }
                                     }
                                 }
                             }
-                        ) { Text("انتخاب خودکار سریع‌ترین سرور") }
+                        ) {
+                            Text("انتخاب خودکار سریع‌ترین سرور")
+                        }
 
                         Spacer(Modifier.height(12.dp))
                         Text("سرورها", fontSize = 19.sp)
@@ -163,15 +200,18 @@ class MainActivity : ComponentActivity() {
                                     )
                                     Column(Modifier.weight(1f)) {
                                         Text(server.name)
-                                        Text("${server.endpoint}:${server.port}", fontSize = 12.sp)
+                                        Text(
+                                            "${server.endpoint}:${server.port}",
+                                            fontSize = 12.sp
+                                        )
                                     }
                                 }
                             }
                         }
 
                         Text(
-                            "می‌توانید فایل استاندارد WireGuard (.conf) را از یک سرویس رایگان وارد کنید؛ " +
-                                "کلید خصوصی همان فایل فقط روی دستگاه استفاده می‌شود.",
+                            "فایل استاندارد WireGuard (.conf) از سرویس‌های رایگان قابل وارد کردن است؛ " +
+                                "کلید خصوصی فایل فقط روی دستگاه ذخیره رمزنگاری‌شده می‌شود.",
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center
                         )
@@ -181,8 +221,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun connectImportedConfig() {
+        Thread {
+            runCatching { manager.connectImportedConfig() }
+                .onSuccess { runOnUiThread { recreate() } }
+                .onFailure {
+                    runOnUiThread {
+                        Toast.makeText(
+                            this,
+                            "خطا در اتصال WireGuard: ${it.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+        }.start()
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == 101 && resultCode == Activity.RESULT_OK) {
+            connectImportedConfig()
+            return
+        }
+
         if (requestCode == 100 && resultCode == Activity.RESULT_OK) {
             val catalog = runCatching { manager.loadBundledCatalog() }.getOrNull()
             val server = catalog?.servers?.firstOrNull { it.id == manager.lastServerId() }
@@ -193,7 +255,11 @@ class MainActivity : ComponentActivity() {
                         .onSuccess { runOnUiThread { recreate() } }
                         .onFailure {
                             runOnUiThread {
-                                Toast.makeText(this, "خطا: ${it.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    this,
+                                    "خطا: ${it.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                 }.start()
