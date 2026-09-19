@@ -75,6 +75,11 @@ class MainActivity : ComponentActivity() {
 
             fun connectNow() {
                 val importedId = selectedImported?.id
+                if (importedId != null) {
+                    getPreferences(MODE_PRIVATE).edit()
+                        .putString("pending_imported_id", importedId)
+                        .apply()
+                }
                 val permission = VpnService.prepare(this@MainActivity)
                 if (permission != null) {
                     startActivityForResult(permission, if (importedId != null) 103 else 100)
@@ -83,8 +88,11 @@ class MainActivity : ComponentActivity() {
                 busy = true
                 executor.execute {
                     val result = runCatching {
-                        if (importedId != null) manager.connectImportedConfig(importedId)
-                        else manager.connect(selected!!)
+                        if (importedId != null) manager.connectImportedWithFailover(importedId)
+                        else {
+                            manager.connect(selected!!)
+                            selected!!.name
+                        }
                     }
                     runOnUiThread {
                         busy = false
@@ -246,10 +254,13 @@ class MainActivity : ComponentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != Activity.RESULT_OK) return
 
-        val id = if (requestCode == 103) manager.selectedImportedId() else null
+        val id = if (requestCode == 103) {
+            getPreferences(MODE_PRIVATE).getString("pending_imported_id", null)
+        } else null
         if (requestCode == 103 && id != null) {
+            getPreferences(MODE_PRIVATE).edit().remove("pending_imported_id").apply()
             Thread {
-                runCatching { manager.connectImportedConfig(id) }
+                runCatching { manager.connectImportedWithFailover(id) }
                     .onSuccess { runOnUiThread { recreate() } }
                     .onFailure {
                         runOnUiThread {
