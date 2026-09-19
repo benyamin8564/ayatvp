@@ -60,6 +60,68 @@ class WireGuardManager(private val context: Context) {
         store.put("selected_imported_id", id)
     }
 
+    fun connectImportedWithFailover(preferredId: String? = null, timeoutMs: Long = 12_000): String {
+        val configs = getImportedConfigs()
+        require(configs.isNotEmpty()) { "هیچ کانفیگ WireGuard وارد نشده است" }
+
+        val ordered = buildList {
+            preferredId?.let { id -> configs.firstOrNull { it.id == id }?.let(::add) }
+            configs.filter { it.id != preferredId }.forEach(::add)
+        }
+
+        var lastError: Throwable? = null
+        for (config in ordered) {
+            try { disconnect() } catch (_: Exception) {}
+            try {
+                connectConfig(config.configText)
+                if (verifyTunnelTraffic(timeoutMs)) {
+                    store.put("selected_imported_id", config.id)
+                    return config.name
+                }
+                throw IllegalStateException("Handshake/traffic verification failed")
+            } catch (e: Exception) {
+                lastError = e
+                try { disconnect() } catch (_: Exception) {}
+            }
+        }
+        throw IllegalStateException(
+            "هیچ‌کدام از ${configs.size} سرورهای WireGuard پاسخ ندادند. " +
+                (lastError?.message ?: "")
+        )
+    }
+
+    private fun verifyTunnelTraffic(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var lastRx = 0L
+        while (System.currentTimeMillis() < deadline) {
+            if (!isConnected()) return false
+            val before = runCatching { backend.getStatistics(tunnel).totalRx }.getOrDefault(0L)
+            lastRx = maxOf(lastRx, before)
+            if (probeInternet()) {
+                val after = runCatching { backend.getStatistics(tunnel).totalRx }.getOrDefault(0L)
+                if (after > lastRx || after > 0L) return true
+            }
+            Thread.sleep(700)
+        }
+        return lastRx > 0L
+    }
+
+    private fun probeInternet(): Boolean {
+        return runCatching {
+            val conn = (URL("https://www.cloudflare.com/cdn-cgi/trace").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 2500
+                readTimeout = 2500
+                instanceFollowRedirects = false
+                useCaches = false
+            }
+            val code = conn.responseCode
+            conn.inputStream.use { it.readBytes() }
+            conn.disconnect()
+            code in 200..399
+        }.getOrDefault(false)
+    }
+
     fun importConfigZip(zipBytes: ByteArray): List<ImportedVpnConfig> {
         require(zipBytes.size <= 10 * 1024 * 1024) { "حجم ZIP بیش از 10MB است" }
         val imported = mutableListOf<ImportedVpnConfig>()
