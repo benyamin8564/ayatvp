@@ -5,9 +5,9 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,27 +28,30 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         manager = WireGuardManager(this)
 
-        val importConfig = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val importConf = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri == null) return@registerForActivityResult
-            try {
+            runCatching {
                 val text = contentResolver.openInputStream(uri)?.use {
                     it.readBytes().toString(Charsets.UTF_8)
-                } ?: throw IllegalArgumentException("فایل خوانده نشد")
-
+                } ?: error("فایل خوانده نشد")
                 manager.saveImportedConfig(text)
+                Toast.makeText(this, "کانفیگ وارد شد؛ حالا اتصال را بزنید.", Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(this, "خطا در فایل WireGuard: ${it.message}", Toast.LENGTH_LONG).show()
+            }
+        }
 
-                val permission = VpnService.prepare(this@MainActivity)
-                if (permission != null) {
-                    startActivityForResult(permission, 101)
-                } else {
-                    connectImportedConfig()
-                }
-            } catch (e: Exception) {
-                Toast.makeText(
-                    this,
-                    "خطا در فایل WireGuard: " + e.message,
-                    Toast.LENGTH_LONG
-                ).show()
+        val importZip = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@registerForActivityResult
+            runCatching {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: error("ZIP خوانده نشد")
+                manager.importConfigZip(bytes)
+            }.onSuccess {
+                Toast.makeText(this, "${it.size} سرور WireGuard وارد شد.", Toast.LENGTH_LONG).show()
+                recreate()
+            }.onFailure {
+                Toast.makeText(this, "خطا در ZIP: ${it.message}", Toast.LENGTH_LONG).show()
             }
         }
 
@@ -56,6 +59,10 @@ class MainActivity : ComponentActivity() {
             var connected by remember { mutableStateOf(manager.isConnected()) }
             var catalog by remember { mutableStateOf<ServerCatalog?>(null) }
             var selected by remember { mutableStateOf<VpnServer?>(null) }
+            var imported by remember { mutableStateOf(manager.getImportedConfigs()) }
+            var selectedImported by remember {
+                mutableStateOf(imported.firstOrNull { it.id == manager.selectedImportedId() })
+            }
             var busy by remember { mutableStateOf(false) }
 
             LaunchedEffect(Unit) {
@@ -63,6 +70,33 @@ class MainActivity : ComponentActivity() {
                     catalog = it
                     selected = it.servers.firstOrNull { s -> s.id == manager.lastServerId() }
                         ?: it.servers.firstOrNull()
+                }
+            }
+
+            fun connectNow() {
+                val importedId = selectedImported?.id
+                val permission = VpnService.prepare(this@MainActivity)
+                if (permission != null) {
+                    startActivityForResult(permission, if (importedId != null) 103 else 100)
+                    return
+                }
+                busy = true
+                executor.execute {
+                    val result = runCatching {
+                        if (importedId != null) manager.connectImportedConfig(importedId)
+                        else manager.connect(selected!!)
+                    }
+                    runOnUiThread {
+                        busy = false
+                        result.onSuccess { connected = true }
+                            .onFailure {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "خطا: ${it.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                    }
                 }
             }
 
@@ -77,8 +111,8 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("AI Iran VPN", fontSize = 30.sp)
                         Spacer(Modifier.height(8.dp))
-                        Text("WireGuard واقعی با مدیریت کلید و انتخاب سرور", fontSize = 16.sp)
-                        Spacer(Modifier.height(24.dp))
+                        Text("WireGuard واقعی با کانفیگ‌های خصوصی شما", fontSize = 16.sp)
+                        Spacer(Modifier.height(20.dp))
 
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
@@ -86,23 +120,26 @@ class MainActivity : ComponentActivity() {
                                     if (connected) "وضعیت: متصل" else "وضعیت: قطع",
                                     fontSize = 20.sp
                                 )
-                                Spacer(Modifier.height(8.dp))
+                                Spacer(Modifier.height(6.dp))
                                 Text(
-                                    selected?.let { "سرور: ${it.name}" }
-                                        ?: "سروری پیکربندی نشده",
-                                    textAlign = TextAlign.Center
+                                    when {
+                                        selectedImported != null -> "سرور: ${selectedImported!!.name}"
+                                        selected != null -> "سرور: ${selected!!.name}"
+                                        else -> "سروری انتخاب نشده"
+                                    }
                                 )
                             }
                         }
 
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(14.dp))
 
                         Button(
                             modifier = Modifier.fillMaxWidth().height(52.dp),
-                            enabled = !busy && selected != null,
+                            enabled = !busy && (selected != null || selectedImported != null),
                             onClick = {
                                 if (connected) {
                                     runCatching { manager.disconnect() }
+                                        .onSuccess { connected = false }
                                         .onFailure {
                                             Toast.makeText(
                                                 this@MainActivity,
@@ -110,109 +147,93 @@ class MainActivity : ComponentActivity() {
                                                 Toast.LENGTH_LONG
                                             ).show()
                                         }
-                                        .onSuccess { connected = false }
-                                } else {
-                                    val permission = VpnService.prepare(this@MainActivity)
-                                    if (permission != null) {
-                                        startActivityForResult(permission, 100)
-                                    } else {
-                                        busy = true
-                                        val server = selected!!
-                                        executor.execute {
-                                            val result = runCatching { manager.connect(server) }
-                                            runOnUiThread {
-                                                busy = false
-                                                result.onFailure {
-                                                    Toast.makeText(
-                                                        this@MainActivity,
-                                                        "خطا: ${it.message}",
-                                                        Toast.LENGTH_LONG
-                                                    ).show()
-                                                }.onSuccess { connected = true }
-                                            }
-                                        }
-                                    }
-                                }
+                                } else connectNow()
                             }
                         ) {
                             Text(
                                 if (busy) "در حال اتصال..."
                                 else if (connected) "قطع اتصال"
-                                else "اتصال"
+                                else "اتصال به سرور انتخاب‌شده"
                             )
                         }
 
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(8.dp))
 
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !busy && !connected,
-                            onClick = {
-                                importConfig.launch(
-                                    arrayOf("application/octet-stream", "text/plain", "*/*")
-                                )
-                            }
+                            onClick = { importZip.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) }
                         ) {
-                            Text("وارد کردن فایل WireGuard (.conf)")
+                            Text("وارد کردن ZIP کانفیگ‌ها")
+                        }
+
+                        Spacer(Modifier.height(6.dp))
+
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !busy && !connected,
+                            onClick = { importConf.launch(arrayOf("application/octet-stream", "text/plain", "*/*")) }
+                        ) {
+                            Text("وارد کردن یک فایل WireGuard (.conf)")
                         }
 
                         Spacer(Modifier.height(14.dp))
 
-                        OutlinedButton(
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = !busy && catalog != null,
-                            onClick = {
-                                val cat = catalog ?: return@OutlinedButton
-                                busy = true
-                                executor.execute {
-                                    val best = runCatching { manager.chooseBestServer(cat) }
-                                    runOnUiThread {
-                                        busy = false
-                                        best.onSuccess {
-                                            selected = it
-                                            Toast.makeText(
-                                                this@MainActivity,
-                                                "سرور انتخاب شد: ${it.name}",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
+                        if (imported.isNotEmpty()) {
+                            Text("کانفیگ‌های واردشده: ${imported.size}", fontSize = 19.sp)
+                            Spacer(Modifier.height(4.dp))
+                            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                                items(imported, key = { it.id }) { item ->
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = selectedImported?.id == item.id,
+                                            onClick = {
+                                                selectedImported = item
+                                                selected = null
+                                            },
+                                            enabled = !connected
+                                        )
+                                        Text(item.name, modifier = Modifier.weight(1f))
                                     }
                                 }
                             }
-                        ) {
-                            Text("انتخاب خودکار سریع‌ترین سرور")
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-                        Text("سرورها", fontSize = 19.sp)
-                        Spacer(Modifier.height(6.dp))
-
-                        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-                            items(catalog?.servers ?: emptyList()) { server ->
-                                Row(
-                                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    RadioButton(
-                                        selected = selected?.id == server.id,
-                                        onClick = { selected = server },
-                                        enabled = !connected
-                                    )
-                                    Column(Modifier.weight(1f)) {
-                                        Text(server.name)
-                                        Text(
-                                            "${server.endpoint}:${server.port}",
-                                            fontSize = 12.sp
+                        } else {
+                            Text(
+                                "هنوز ZIP خصوصی شما وارد نشده است.",
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Text("سرورهای نمونه", fontSize = 19.sp)
+                            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                                items(catalog?.servers ?: emptyList()) { server ->
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = selected?.id == server.id,
+                                            onClick = {
+                                                selected = server
+                                                selectedImported = null
+                                            },
+                                            enabled = !connected
                                         )
+                                        Column(Modifier.weight(1f)) {
+                                            Text(server.name)
+                                            Text("${server.endpoint}:${server.port}", fontSize = 12.sp)
+                                        }
                                     }
                                 }
                             }
                         }
 
                         Text(
-                            "فایل استاندارد WireGuard (.conf) از سرویس‌های رایگان قابل وارد کردن است؛ " +
-                                "کلید خصوصی فایل فقط روی دستگاه ذخیره رمزنگاری‌شده می‌شود.",
-                            fontSize = 12.sp,
+                            "کانفیگ‌ها داخل ریپوی عمومی قرار نمی‌گیرند. ZIP را روی گوشی وارد کنید؛ کلیدهای خصوصی با Android Keystore رمزنگاری و محلی ذخیره می‌شوند.",
+                            fontSize = 11.sp,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -221,31 +242,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connectImportedConfig() {
-        Thread {
-            runCatching { manager.connectImportedConfig() }
-                .onSuccess { runOnUiThread { recreate() } }
-                .onFailure {
-                    runOnUiThread {
-                        Toast.makeText(
-                            this,
-                            "خطا در اتصال WireGuard: ${it.message}",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-        }.start()
-    }
-
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != Activity.RESULT_OK) return
 
-        if (requestCode == 101 && resultCode == Activity.RESULT_OK) {
-            connectImportedConfig()
-            return
-        }
-
-        if (requestCode == 100 && resultCode == Activity.RESULT_OK) {
+        val id = if (requestCode == 103) manager.selectedImportedId() else null
+        if (requestCode == 103 && id != null) {
+            Thread {
+                runCatching { manager.connectImportedConfig(id) }
+                    .onSuccess { runOnUiThread { recreate() } }
+                    .onFailure {
+                        runOnUiThread {
+                            Toast.makeText(this, "خطا: ${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+            }.start()
+        } else if (requestCode == 100) {
             val catalog = runCatching { manager.loadBundledCatalog() }.getOrNull()
             val server = catalog?.servers?.firstOrNull { it.id == manager.lastServerId() }
                 ?: catalog?.servers?.firstOrNull()
@@ -255,11 +267,7 @@ class MainActivity : ComponentActivity() {
                         .onSuccess { runOnUiThread { recreate() } }
                         .onFailure {
                             runOnUiThread {
-                                Toast.makeText(
-                                    this,
-                                    "خطا: ${it.message}",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                Toast.makeText(this, "خطا: ${it.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                 }.start()
