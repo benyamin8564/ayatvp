@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
-import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import org.json.JSONArray
 
@@ -95,7 +94,7 @@ class WireGuardManager(private val context: Context) {
         var lastRx = 0L
         while (System.currentTimeMillis() < deadline) {
             if (!isConnected()) return false
-            val before = runCatching { backend.getStatistics(tunnel).totalRx }.getOrDefault(0L)
+            val before = runCatching { backend.getStatistics(tunnel).totalRx() }.getOrDefault(0L)
             lastRx = maxOf(lastRx, before)
             if (probeInternet()) {
                 val after = runCatching { backend.getStatistics(tunnel).totalRx }.getOrDefault(0L)
