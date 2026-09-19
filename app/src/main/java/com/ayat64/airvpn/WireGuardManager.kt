@@ -6,12 +6,16 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import com.wireguard.crypto.Key
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import org.json.JSONArray
 
 class WireGuardManager(private val context: Context) {
     private val backend = GoBackend(context.applicationContext)
@@ -33,8 +37,7 @@ class WireGuardManager(private val context: Context) {
     }
 
     fun connect(server: VpnServer) {
-        val privateKey = getPrivateKey()
-        val configText = buildConfig(privateKey, server)
+        val configText = buildConfig(getPrivateKey(), server)
         connectConfig(configText)
         store.put("last_server_id", server.id)
     }
@@ -50,6 +53,66 @@ class WireGuardManager(private val context: Context) {
         connectConfig(configText)
     }
 
+    fun connectImportedConfig(id: String) {
+        val config = getImportedConfigs().firstOrNull { it.id == id }
+            ?: throw IllegalArgumentException("کانفیگ پیدا نشد")
+        connectConfig(config.configText)
+        store.put("selected_imported_id", id)
+    }
+
+    fun importConfigZip(zipBytes: ByteArray): List<ImportedVpnConfig> {
+        require(zipBytes.size <= 10 * 1024 * 1024) { "حجم ZIP بیش از 10MB است" }
+        val imported = mutableListOf<ImportedVpnConfig>()
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
+            while (true) {
+                val e = zip.nextEntry ?: break
+                if (e.isDirectory || !e.name.lowercase().endsWith(".conf")) continue
+                val safeName = e.name.substringAfterLast('/').ifBlank { "wireguard.conf" }
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val read = zip.read(buffer)
+                    if (read <= 0) break
+                    total += read
+                    require(total <= 512 * 1024) { "فایل کانفیگ بیش از حد بزرگ است: $safeName" }
+                    output.write(buffer, 0, read)
+                }
+                val text = output.toByteArray().toString(StandardCharsets.UTF_8)
+                runCatching { validateConfig(text) }.onSuccess {
+                    val id = sha256(safeName + "\n" + text).take(24)
+                    imported += ImportedVpnConfig(id, safeName.removeSuffix(".conf"), text)
+                }
+            }
+        }
+        require(imported.isNotEmpty()) { "هیچ فایل معتبر WireGuard (.conf) در ZIP پیدا نشد" }
+        val index = JSONArray()
+        imported.forEach {
+            index.put(org.json.JSONObject().apply {
+                put("id", it.id)
+                put("name", it.name)
+            })
+            store.put("imported_config_${it.id}", it.configText)
+        }
+        store.put("imported_config_index", index.toString())
+        return imported
+    }
+
+    fun getImportedConfigs(): List<ImportedVpnConfig> {
+        val indexText = store.get("imported_config_index") ?: return emptyList()
+        val index = JSONArray(indexText)
+        return buildList {
+            for (i in 0 until index.length()) {
+                val item = index.getJSONObject(i)
+                val id = item.getString("id")
+                val text = store.get("imported_config_${id}") ?: continue
+                add(ImportedVpnConfig(id, item.getString("name"), text))
+            }
+        }
+    }
+
+    fun selectedImportedId(): String? = store.get("selected_imported_id")
+
     fun connectConfig(configText: String) {
         validateConfig(configText)
         val config = Config.parse(ByteArrayInputStream(configText.toByteArray(StandardCharsets.UTF_8)))
@@ -64,6 +127,7 @@ class WireGuardManager(private val context: Context) {
         require(configText.contains("[Peer]", ignoreCase = true)) {
             "No WireGuard peer found"
         }
+        Config.parse(ByteArrayInputStream(configText.toByteArray(StandardCharsets.UTF_8)))
     }
 
     fun hasImportedConfig(): Boolean = store.get("imported_config") != null
@@ -151,4 +215,9 @@ class WireGuardManager(private val context: Context) {
         }
         return ServerCatalog.parse(text)
     }
+
+    private fun sha256(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 }
