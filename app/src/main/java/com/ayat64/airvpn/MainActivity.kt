@@ -47,8 +47,10 @@ class MainActivity : ComponentActivity() {
                 val text = contentResolver.openInputStream(uri)?.use {
                     it.readBytes().toString(Charsets.UTF_8)
                 } ?: error("فایل خوانده نشد")
-                manager.saveImportedConfig(text)
+                val name = uri.lastPathSegment?.substringAfterLast("/").ifBlank { "WireGuard.conf" }
+                manager.saveImportedConfig(text, name)
                 Toast.makeText(this, "کانفیگ وارد شد؛ حالا اتصال را بزنید.", Toast.LENGTH_SHORT).show()
+                recreate()
             }.onFailure {
                 Toast.makeText(this, "خطا در فایل WireGuard: ${it.message}", Toast.LENGTH_LONG).show()
             }
