@@ -41,9 +41,24 @@ class WireGuardManager(private val context: Context) {
         store.put("last_server_id", server.id)
     }
 
-    fun saveImportedConfig(configText: String) {
+    fun saveImportedConfig(configText: String, name: String = "WireGuard.conf"): ImportedVpnConfig {
         validateConfig(configText)
+NaN
+        val id = sha256(safeName + "\n" + configText).take(24)
+        val item = ImportedVpnConfig(id, safeName.removeSuffix(".conf"), configText)
+        store.put("imported_config_$id", configText)
+        val existing = getImportedConfigs().filterNot { it.id == id }
+        val index = JSONArray()
+        (existing + item).forEach { imported ->
+            index.put(org.json.JSONObject().apply {
+                put("id", imported.id)
+                put("name", imported.name)
+            })
+        }
+        store.put("imported_config_index", index.toString())
+        store.put("selected_imported_id", id)
         store.put("imported_config", configText)
+        return item
     }
 
     fun connectImportedConfig() {
@@ -156,6 +171,7 @@ class WireGuardManager(private val context: Context) {
             store.put("imported_config_${it.id}", it.configText)
         }
         store.put("imported_config_index", index.toString())
+        if (selectedImportedId() == null) store.put("selected_imported_id", imported.first().id)
         return imported
     }
 
