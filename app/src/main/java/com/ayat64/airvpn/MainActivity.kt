@@ -21,12 +21,25 @@ import androidx.compose.ui.unit.sp
 import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
+    private enum class ConnectionStatus {
+        DISCONNECTED,
+        CONNECTING,
+        CONNECTED_HANDSHAKE,
+        SERVER_NOT_RESPONDING
+    }
+
+    private val connectionStatus = mutableStateOf(ConnectionStatus.DISCONNECTED)
     private lateinit var manager: WireGuardManager
     private val executor = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         manager = WireGuardManager(this)
+        connectionStatus.value = if (manager.isConnected()) {
+            ConnectionStatus.CONNECTED_HANDSHAKE
+        } else {
+            ConnectionStatus.DISCONNECTED
+        }
 
         val importConf = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri == null) return@registerForActivityResult
@@ -74,6 +87,7 @@ class MainActivity : ComponentActivity() {
             }
 
             fun connectNow() {
+                connectionStatus.value = ConnectionStatus.CONNECTING
                 val importedId = selectedImported?.id
                 if (importedId != null) {
                     getPreferences(MODE_PRIVATE).edit()
@@ -96,11 +110,15 @@ class MainActivity : ComponentActivity() {
                     }
                     runOnUiThread {
                         busy = false
-                        result.onSuccess { connected = true }
+                        result.onSuccess {
+                            connected = true
+                            connectionStatus.value = ConnectionStatus.CONNECTED_HANDSHAKE
+                        }
                             .onFailure {
+                                connectionStatus.value = ConnectionStatus.SERVER_NOT_RESPONDING
                                 Toast.makeText(
                                     this@MainActivity,
-                                    "خطا: ${it.message}",
+                                    "سرور پاسخ نمی‌دهد: ${it.message}",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
@@ -124,10 +142,13 @@ class MainActivity : ComponentActivity() {
 
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
-                                Text(
-                                    if (connected) "وضعیت: متصل" else "وضعیت: قطع",
-                                    fontSize = 20.sp
-                                )
+                                val statusText = when (connectionStatus.value) {
+                                    ConnectionStatus.CONNECTING -> "🟡 در حال اتصال"
+                                    ConnectionStatus.CONNECTED_HANDSHAKE -> "🟢 متصل و Handshake برقرار"
+                                    ConnectionStatus.SERVER_NOT_RESPONDING -> "🔴 سرور پاسخ نمی‌دهد"
+                                    ConnectionStatus.DISCONNECTED -> "وضعیت: قطع"
+                                }
+                                Text(statusText, fontSize = 20.sp)
                                 Spacer(Modifier.height(6.dp))
                                 Text(
                                     when {
@@ -147,7 +168,10 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 if (connected) {
                                     runCatching { manager.disconnect() }
-                                        .onSuccess { connected = false }
+                                        .onSuccess {
+                                            connected = false
+                                            connectionStatus.value = ConnectionStatus.DISCONNECTED
+                                        }
                                         .onFailure {
                                             Toast.makeText(
                                                 this@MainActivity,
@@ -259,26 +283,40 @@ class MainActivity : ComponentActivity() {
         } else null
         if (requestCode == 103 && id != null) {
             getPreferences(MODE_PRIVATE).edit().remove("pending_imported_id").apply()
+            connectionStatus.value = ConnectionStatus.CONNECTING
             Thread {
                 runCatching { manager.connectImportedWithFailover(id) }
-                    .onSuccess { runOnUiThread { recreate() } }
+                    .onSuccess {
+                        runOnUiThread {
+                            connectionStatus.value = ConnectionStatus.CONNECTED_HANDSHAKE
+                            recreate()
+                        }
+                    }
                     .onFailure {
                         runOnUiThread {
-                            Toast.makeText(this, "خطا: ${it.message}", Toast.LENGTH_LONG).show()
+                            connectionStatus.value = ConnectionStatus.SERVER_NOT_RESPONDING
+                            Toast.makeText(this, "سرور پاسخ نمی‌دهد: ${it.message}", Toast.LENGTH_LONG).show()
                         }
                     }
             }.start()
         } else if (requestCode == 100) {
+            connectionStatus.value = ConnectionStatus.CONNECTING
             val catalog = runCatching { manager.loadBundledCatalog() }.getOrNull()
             val server = catalog?.servers?.firstOrNull { it.id == manager.lastServerId() }
                 ?: catalog?.servers?.firstOrNull()
             if (server != null) {
                 Thread {
                     runCatching { manager.connect(server) }
-                        .onSuccess { runOnUiThread { recreate() } }
+                        .onSuccess {
+                            runOnUiThread {
+                                connectionStatus.value = ConnectionStatus.CONNECTED_HANDSHAKE
+                                recreate()
+                            }
+                        }
                         .onFailure {
                             runOnUiThread {
-                                Toast.makeText(this, "خطا: ${it.message}", Toast.LENGTH_LONG).show()
+                                connectionStatus.value = ConnectionStatus.SERVER_NOT_RESPONDING
+                                Toast.makeText(this, "سرور پاسخ نمی‌دهد: ${it.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                 }.start()
