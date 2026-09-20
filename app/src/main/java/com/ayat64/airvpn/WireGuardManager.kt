@@ -94,10 +94,10 @@ class WireGuardManager(private val context: Context) {
         var lastRx = 0L
         while (System.currentTimeMillis() < deadline) {
             if (!isConnected()) return false
-            val before = runCatching { backend.getStatistics(tunnel).totalRx }.getOrDefault(0L)
+            val before = runCatching { backend.getStatistics(tunnel).totalRx() }.getOrDefault(0L)
             lastRx = maxOf(lastRx, before)
             if (probeInternet()) {
-                val after = runCatching { backend.getStatistics(tunnel).totalRx }.getOrDefault(0L)
+                val after = runCatching { backend.getStatistics(tunnel).totalRx() }.getOrDefault(0L)
                 if (after > lastRx || after > 0L) return true
             }
             Thread.sleep(700)
