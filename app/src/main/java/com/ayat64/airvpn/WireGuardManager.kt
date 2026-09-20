@@ -43,7 +43,7 @@ class WireGuardManager(private val context: Context) {
 
     fun saveImportedConfig(configText: String, name: String = "WireGuard.conf"): ImportedVpnConfig {
         validateConfig(configText)
-NaN
+        val safeName = name.substringAfterLast('/').ifBlank { "WireGuard.conf" }
         val id = sha256(safeName + "\n" + configText).take(24)
         val item = ImportedVpnConfig(id, safeName.removeSuffix(".conf"), configText)
         store.put("imported_config_$id", configText)
